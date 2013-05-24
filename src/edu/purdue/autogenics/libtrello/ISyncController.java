@@ -13,8 +13,8 @@ public interface ISyncController {
 	public void setListTrelloId(IList localList, String newId);
 	public void setListLocalChanges(IList localList, Boolean changes);
 	
-	public void updateCard(ICard localCard, ICard trelloCard);
-	public void addCard(ICard trelloCard);
+	public void updateCard(ICard localCard, ICard trelloCard); //If closed card, only cardId is valid
+	public void addCard(ICard trelloCard);  //If closed card, only cardId is valid
 	public void setCardTrelloId(ICard localCard, String newId);
 	public void setCardLocalChanges(ICard localCard, Boolean changes);
 	

@@ -1,5 +1,6 @@
 package edu.purdue.autogenics.libtrello;
 
+import java.util.Date;
 import java.util.List;
 
 public interface ICard extends ICommon {	
@@ -9,4 +10,5 @@ public interface ICard extends ICommon {
 	public String getDesc();
 	public List<String> getLabelNames();
 	public List<String> getLabels();
+	public Date getChangedDate();
 }

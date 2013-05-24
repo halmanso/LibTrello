@@ -1,4 +1,5 @@
 package edu.purdue.autogenics.libtrello;
+import java.util.Date;
 import java.util.List;
 
 
@@ -11,9 +12,10 @@ public class TrelloCard implements ICard {
 	List<String> labelNames;
 	List<String> labels;
 	Boolean closed;
+	Date changedDate;
 	
 	public TrelloCard(String id, String listId, String boardId, String name,
-			String desc, List<String> labelNames, List<String> labels, Boolean closed) {
+			String desc, List<String> labelNames, List<String> labels, Boolean closed, Date changedDate) {
 		super();
 		this.id = id;
 		this.listId = listId;
@@ -23,6 +25,7 @@ public class TrelloCard implements ICard {
 		this.labelNames = labelNames;
 		this.labels = labels;
 		this.closed = closed;
+		this.changedDate = changedDate;
 	}
 
 	@Override
@@ -70,6 +73,10 @@ public class TrelloCard implements ICard {
 		//Unused
 		return null;
 	}
+	@Override
+	public Date getChangedDate() {
+		return this.changedDate;
+	}
 
 	public void setTrelloId(String id) {
 		this.id = id;
@@ -92,5 +99,9 @@ public class TrelloCard implements ICard {
 	public void setLabels(List<String> labels) {
 		this.labels = labels;
 	}
+	public void setChangedDate(Date changedDate) {
+		this.changedDate = changedDate;
+	}
+	
 	
 }

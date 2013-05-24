@@ -10,8 +10,15 @@ import java.io.UnsupportedEncodingException;
 import java.io.Writer;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
+import java.util.TimeZone;
+
 import org.apache.http.HttpResponse;
 import org.apache.http.client.ClientProtocolException;
 import org.apache.http.client.HttpClient;
@@ -25,6 +32,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.net.Uri;
 import android.util.Log;
 
 //Singleton
@@ -33,23 +44,117 @@ public class TrelloController {
 	private String OrganizationID;
 	private String TrelloKey;
 	private String TrelloToken;
+	private Context AppContext;
 	
 	public static final String PREFS_NAME = "TrelloClient";
 	
-	private Boolean started = false;
+	private static SimpleDateFormat dateFormater;
+
+	private Boolean syncAllBoards = true;
 	
 	List <TrelloBoard> trelloBoards;
 	List <TrelloList> trelloLists;
 	List <TrelloCard> trelloCards; 
 	
-	public TrelloController(String organizationID, String trelloKey, String trelloToken) {
+	//TODO put these in library
+	private static final String COL_ID = "_id";
+	private static final String COL_NAME = "name";
+	private static final String COL_PACKAGE_NAME = "package_name";
+	private static final String COL_ALLOW_SYNCING = "allow_syncing";
+	private static final String COL_LAST_SYNC = "lastsync";
+	private static final String AUTHORITY = "edu.purdue.autogenics.trello.provider";
+	private static final String BASE_PATH = "apps";
+	private static final String LOGINS_PATH = "logins";
+	private static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/" + BASE_PATH);
+	private static final Uri CONTENT_URI_LOGINS = Uri.parse("content://" + AUTHORITY + "/" + LOGINS_PATH);
+	
+	public TrelloController(Context AppContext, String organizationID, String trelloKey, String trelloToken) {
 		super();
 		OrganizationID = organizationID;
 		TrelloKey = trelloKey;
 		TrelloToken = trelloToken;
+		this.AppContext = AppContext;
+		//2013-03-29T11:22:30.368Z
+		dateFormater = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
+		dateFormater.setTimeZone(TimeZone.getTimeZone("UTC"));
 	}
 
+	public void resyncBoards(){
+		syncAllBoards = true;
+	}
+	
+
+	public boolean syncingEnabled(){
+		String[] projection = { COL_ID, COL_NAME, COL_PACKAGE_NAME, COL_ALLOW_SYNCING, COL_LAST_SYNC };
+		Cursor mCursor = AppContext.getContentResolver().query(CONTENT_URI, projection, null, null, null);
+		Boolean found = false;
+		if (null == mCursor) {
+		    /*
+		     * Insert code here to handle the error. Be sure not to use the cursor! You may want to
+		     * call android.util.Log.e() to log this error.
+		     *
+		     */
+			// If the Cursor is empty, the provider found no matches
+			Log.d("TrelloController - syncingEnabled", "Null cursor");
+
+		} else if (mCursor.getCount() < 1) {
+			Log.d("TrelloController - syncingEnabled", "None found");
+		} else {
+			//Results
+			String packageName = AppContext.getPackageName();
+			while(mCursor.moveToNext()){
+				String matchPackageName = mCursor.getString(mCursor.getColumnIndex(COL_PACKAGE_NAME));
+				int enabled = mCursor.getInt(mCursor.getColumnIndex(COL_ALLOW_SYNCING));
+				Log.d("TrelloController - syncingEnabled", "Match: " + packageName + " with " + matchPackageName);
+				if(packageName.contentEquals(matchPackageName)){
+					if(enabled == 1){
+						found = true;
+					}
+				}
+			}
+		}
+		mCursor.close();
+		return found;
+	}
+	
+	public boolean getAPIKeys(){
+		String COL_SECRET = "secret";
+		String COL_TOKEN = "token";
+		String COL_APIKEY = "apikey";
+	    String COL_ORGO_ID = "orgo_id";
+		
+		String[] projection = { COL_SECRET, COL_TOKEN, COL_APIKEY, COL_ORGO_ID };
+		Cursor mCursor = AppContext.getContentResolver().query(CONTENT_URI_LOGINS, projection, null, null, null);
+		Boolean found = false;
+		if (null == mCursor) {
+		    /*
+		     * Insert code here to handle the error. Be sure not to use the cursor! You may want to
+		     * call android.util.Log.e() to log this error.
+		     *
+		     */
+			// If the Cursor is empty, the provider found no matches
+			Log.d("TrelloController - getAPIKeys", "Null cursor");
+		} else if (mCursor.getCount() < 1) {
+			Log.d("TrelloController - getAPIKeys", "None found");
+		} else {
+			//Results
+			if(mCursor.moveToFirst()){
+				TrelloKey = mCursor.getString(mCursor.getColumnIndex(COL_APIKEY)).trim();
+				TrelloToken = mCursor.getString(mCursor.getColumnIndex(COL_TOKEN)).trim();
+				OrganizationID = mCursor.getString(mCursor.getColumnIndex(COL_ORGO_ID)).trim();
+				found = true;
+			}
+			Log.d("TrelloController - getAPIKeys", "Key:" + TrelloKey.trim());
+			Log.d("TrelloController - getAPIKeys", "Token:" + TrelloToken.trim());
+			Log.d("TrelloController - getAPIKeys", "Organization ID:" + OrganizationID.trim());
+		}
+		mCursor.close();
+		return found;
+	}
+	
 	public void sync(ISyncController syncController){
+		//Check if syncing is enabled
+		
 		trelloLists = new ArrayList<TrelloList>();
 		trelloCards = new ArrayList<TrelloCard>();	
 
@@ -59,7 +164,7 @@ public class TrelloController {
 		Boolean addedBoards = false;
 		
 		localBoards = syncController.getLocalBoards();
-		if(started == false){
+		if(syncAllBoards == true){
 			//Download all boards from Trello
 			trelloBoards = getBoards();
 			
@@ -112,7 +217,7 @@ public class TrelloController {
 					}
 				}
 			}
-			started = true;
+			syncAllBoards = false;
 		}
 		
 		if(addedBoards){
@@ -124,8 +229,8 @@ public class TrelloController {
 			
 			if(localBoard.getTrelloId().length() != 0){
 				//Sync Cards and Lists of all localBoards with trelloIds
+				TrelloBoard trelloBoard = getListsAndCards(localBoard.getTrelloId());
 				
-				TrelloBoard trelloBoard = getListsAndCards(localBoard.getTrelloId()); //TODO receive board here, check name/closed
 				//*** BOARD SYNC ***
 				//Find in LocalBoards
 				if(localBoard.hasLocalChanges()){
@@ -142,108 +247,155 @@ public class TrelloController {
 					syncController.updateBoard(localBoard, trelloBoard);
 				}
 				
-				//TODO handle Board Rename
-				
-				//**** LISTS SYNC ****
-				//Loop through lists and update accordingly
-				localLists = syncController.getLocalLists();
-				for(int i=0; i < trelloLists.size(); i++){
-					TrelloList list = trelloLists.get(i);
-					
-					//Find in LocalLists
-					IList localList = null;
-					for(int j=0; j < localLists.size(); j++){
-						if(list.getTrelloId().contentEquals(localLists.get(j).getTrelloId())){
-							localList = localLists.get(j);
-						}
+				//Check if local board is still wanted
+				Boolean localBoardExists = false;
+				List<IBoard> localBoardsAfterSync = syncController.getLocalBoards();
+				for(int m=0; m<localBoardsAfterSync.size(); m++){
+					if(localBoardsAfterSync.get(m).getTrelloId().contentEquals(localBoard.getTrelloId())){
+						localBoardExists = true;
 					}
-					if(localList != null){
-						if(localList.hasLocalChanges()){
-							//Overwrite trello
-							syncController.setListLocalChanges(localList, false);
-							Boolean result = UpdateListOnTrello(localList);
-							if(result == false){
-								//If failed to overwrite
-								syncController.setListLocalChanges(localList, true);
+				}
+				
+				if(localBoardExists){				
+					//**** LISTS SYNC ****
+					//Loop through lists and update accordingly
+					localLists = syncController.getLocalLists();
+					for(int i=0; i < trelloLists.size(); i++){
+						TrelloList list = trelloLists.get(i);
+						
+						//Find in LocalLists
+						IList localList = null;
+						for(int j=0; j < localLists.size(); j++){
+							if(list.getTrelloId().contentEquals(localLists.get(j).getTrelloId())){
+								localList = localLists.get(j);
 							}
-						} else {
-							//No changes on local
-							//Try to convert and check and overwrite local if different
-							syncController.updateList(localList, list);
 						}
-					} else {
-						//New list on trello
-						//Try to convert add to local if converts success
-						syncController.addList(list);
-					}
-				}
-				
-				//Add lists from local to trello that aren't on trello yet and are in this board
-				//Get again, some of trello's may have replaced our local copies without id's
-				localLists = syncController.getLocalLists();
-				for(int j=0; j < localLists.size(); j++){
-					IList localList = localLists.get(j);
-					if(localList.getTrelloId().length() == 0 && localList.getBoardId().contentEquals(localBoard.getTrelloId())){
-						//Add list to trello
-						String newId = AddListToTrello(localList);
-						syncController.setListLocalChanges(localList, false);
-						if(newId != null){
-							syncController.setListTrelloId(localList, newId);
-						} else {
-							syncController.setListLocalChanges(localList, true);
-						}
-					}
-				}
-				
-				//**** CARDS SYNC ****
-				//Loop through cards and update accordingly
-				localCards = syncController.getLocalCards();
-				for(int i=0; i < trelloCards.size(); i++){
-					TrelloCard card = trelloCards.get(i);
-					
-					//Find in localCards
-					ICard localCard = null;
-					for(int j=0; j < localCards.size(); j++){
-						if(card.getTrelloId().contentEquals(localCards.get(j).getTrelloId())){
-							localCard = localCards.get(j);
-						}
-					}
-					if(localCard != null){
-						if(localCard.hasLocalChanges()){
-							//Overwrite trello if listId exists, if listId doesn't exist wait till next sync
-							if(localCard.getListId().length() != 0){
+						if(localList != null){
+							if(localList.hasLocalChanges()){
 								//Overwrite trello
-								syncController.setCardLocalChanges(localCard, false);
-								Boolean result = UpdateCardOnTrello(localCard);
+								syncController.setListLocalChanges(localList, false);
+								Boolean result = UpdateListOnTrello(localList);
 								if(result == false){
 									//If failed to overwrite
-									Log.d("TrelloController - sync", "Failed to update card on trello");
-									syncController.setCardLocalChanges(localCard, true);
+									syncController.setListLocalChanges(localList, true);
 								}
+							} else {
+								//No changes on local
+								//Try to convert and check and overwrite local if different
+								syncController.updateList(localList, list);
 							}
 						} else {
-							//Overwrite local if different
-							syncController.updateCard(localCard, card);
+							//New list on trello
+							//Try to convert add to local if converts success
+							syncController.addList(list);
 						}
-					} else {
-						//New card on trello
-						//Try to convert add to local if converts success
-						syncController.addCard(card);
 					}
-				}
-				//Add cards from local to trello that aren't on trello yet and are on this board
-				//Get again, some of trello's may have replaced our local copies without id's
-				localCards = syncController.getLocalCards();
-				for(int j=0; j < localCards.size(); j++){
-					ICard localCard = localCards.get(j);
-					if(localCard.getTrelloId().length() == 0 && localCard.getBoardId().contentEquals(localBoard.getTrelloId())){
-						//Add card to trello
-						String newId = AddCardToTrello(localCard);
-						syncController.setCardLocalChanges(localCard, false);
-						if(newId != null){
-							syncController.setCardTrelloId(localCard, newId);
+					
+					//Add lists from local to trello that aren't on trello yet and are in this board
+					//Get again, some of trello's may have replaced our local copies without id's
+					localLists = syncController.getLocalLists();
+					for(int j=0; j < localLists.size(); j++){
+						IList localList = localLists.get(j);
+						if(localList.getTrelloId().length() == 0 && localList.getBoardId().contentEquals(localBoard.getTrelloId())){
+							//Add list to trello
+							String newId = AddListToTrello(localList);
+							syncController.setListLocalChanges(localList, false);
+							if(newId != null){
+								syncController.setListTrelloId(localList, newId);
+							} else {
+								syncController.setListLocalChanges(localList, true);
+							}
+						}
+					}
+					
+					Log.d("TrelloController - sync", "TrelloCards length:" + Integer.toString(trelloCards.size()));
+					//**** CARDS SYNC ****
+					//Loop through cards and update accordingly
+					localCards = syncController.getLocalCards();
+					//Add cards that are on trello but not in local db
+					//Update cards either local to trello or update local with 
+					for(int i=0; i < trelloCards.size(); i++){
+						TrelloCard card = trelloCards.get(i);
+	
+						//Find in localCards
+						ICard localCard = null;
+						for(int j=0; j < localCards.size(); j++){
+							if(card.getTrelloId().contentEquals(localCards.get(j).getTrelloId())){
+								localCard = localCards.get(j);
+							}
+						}
+						if(localCard != null){
+							if(localCard.hasLocalChanges()){
+								//Overwrite trello if listId exists, if listId doesn't exist wait till next sync
+								
+								//Check which is newer, trello or local
+								Log.d("TrelloController - sync", "Local Time:" + dateFormater.format(localCard.getChangedDate()));
+								Log.d("TrelloController - sync", "Trello Tim:" + dateFormater.format(card.getChangedDate()));
+								
+								if(localCard.getChangedDate().before(card.getChangedDate())){
+									// Trello was edited last, update local to trello
+									//Overwrite local if different
+									Log.d("TrelloController - sync", "Update local");
+									syncController.updateCard(localCard, card);
+								} else {
+									// Local was edited last or at same second, update trello to local
+									if(localCard.getListId().length() != 0){
+										//Overwrite trello
+										syncController.setCardLocalChanges(localCard, false);
+										Boolean result = UpdateCardOnTrello(localCard);
+										if(result == false){
+											//If failed to overwrite
+											Log.d("TrelloController - sync", "Failed to update card on trello");
+											syncController.setCardLocalChanges(localCard, true);
+										}
+									}
+								}
+							} else {
+								//Overwrite local if different
+								syncController.updateCard(localCard, card);
+							}
 						} else {
-							syncController.setCardLocalChanges(localCard, true);
+							//New card on trello
+							//Try to convert add to local if converts success
+							syncController.addCard(card);
+						}
+					}
+					
+					//Add cards from local to trello that aren't on trello yet and are on this board
+					//Update cards from local that aren't in trello list
+					//Get again, some of trello's may have replaced our local copies without id's
+					localCards = syncController.getLocalCards();
+					for(int j=0; j < localCards.size(); j++){
+						ICard localCard = localCards.get(j);
+						if(localCard.getBoardId().contentEquals(localBoard.getTrelloId())){
+							if(localCard.getTrelloId().length() == 0){
+								//Add card to trello
+								String newId = AddCardToTrello(localCard);
+								syncController.setCardLocalChanges(localCard, false);
+								if(newId != null){
+									syncController.setCardTrelloId(localCard, newId);
+								} else {
+									syncController.setCardLocalChanges(localCard, true);
+								}
+							} else if(localCard.hasLocalChanges()) {
+								//Check if found in trello
+								Boolean found = false;
+								for(int i=0; i < trelloCards.size(); i++){
+									if(trelloCards.get(i).getTrelloId().contentEquals(localCard.getTrelloId())){
+										found = true;
+									}
+								}
+								if(found == false){
+									//Overwrite trello
+									syncController.setCardLocalChanges(localCard, false);
+									Boolean result = UpdateCardOnTrello(localCard);
+									if(result == false){
+										//If failed to overwrite
+										Log.d("TrelloController - sync", "Failed to update card on trello");
+										syncController.setCardLocalChanges(localCard, true);
+									}
+								}
+							}
 						}
 					}
 				}
@@ -263,6 +415,7 @@ public class TrelloController {
 		results.add(new BasicNameValuePair("name", theCard.getName()));
 		results.add(new BasicNameValuePair("desc", theCard.getDesc()));
 		results.add(new BasicNameValuePair("idList", theCard.getListId()));
+		results.add(new BasicNameValuePair("closed", Boolean.toString(theCard.getClosed())));
 
 		try {
 			String result = "";
@@ -539,10 +692,61 @@ public class TrelloController {
 		return boardsList;
 	}
 
+	class TrelloAction {
+    	String type;
+    	String id;
+    	Date date;
+		public TrelloAction(String type, String id, Date date) {
+			super();
+			this.type = type;
+			this.id = id;
+			this.date = date;
+		}
+		public String getType() {
+			return type;
+		}
+		public String getId() {
+			return id;
+		}
+		public Date getDate() {
+			return date;
+		}
+		public void setType(String type) {
+			this.type = type;
+		}
+		public void setId(String id) {
+			this.id = id;
+		}
+		public void setDate(Date date) {
+			this.date = date;
+		}
+		
+    }
 	
 	private TrelloBoard getListsAndCards(String boardId){
 		Log.d("TrelloController - getListsAndCards", "Called");
-		String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&cards=all&card_fields=idList,name,desc,labels,closed&lists=all&list_fields=name,closed";
+		
+		SharedPreferences settings = AppContext.getSharedPreferences(PREFS_NAME, 0);
+	    String dateLastSync = settings.getString("dateLastSync", null);
+		
+		//String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&cards=all&card_fields=idList,name,desc,labels,closed&lists=all&list_fields=name,closed";
+		String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&lists=open&list_fields=name,closed&actions=createCard,updateCard,commentCard,addAttachmentToCard,moveCardFromBoard,moveCardToBoard&action_memberCreator=false&action_fields=data,type,date&action_member=false";
+
+	    if(dateLastSync != null){
+	    	dateLastSync = dateLastSync.replace(" ", "T");
+	    	dateLastSync = dateLastSync + ".000Z";
+	    	url = url + "&actions_since=" + dateLastSync;
+	    }
+		Log.d("TrelloController - getListsAndCards", "URL Actions:" + url);
+
+	    
+		//2013-03-29T11:22:30.368Z
+	    
+	    SharedPreferences.Editor editor = settings.edit();
+		//2013-03-29 11:22:30
+	    editor.putString("dateLastSync", dateFormater.format(new Date()));
+	    editor.commit();
+	    
 		
 		HttpResponse response = getData(url);
 		String result = "";
@@ -562,10 +766,8 @@ public class TrelloController {
 		String board_desc = "";
 		Boolean closed = false;
 		
-		
-		//TODO check if name changed or closed
-		
-		JSONArray cards = null;
+				
+		JSONArray actions = null;
 		JSONArray lists = null;
 		try {
 			board = new JSONObject(result);
@@ -573,50 +775,167 @@ public class TrelloController {
 			board_name = board.getString("name");
 			board_desc = board.getString("desc");
 			closed = board.getBoolean("closed");
-			cards = board.getJSONArray("cards");
+			actions = board.getJSONArray("actions");
 			lists = board.getJSONArray("lists");
 		} catch (JSONException e) {
 			e.printStackTrace();
 		}
 				
-		// Loop through cards from trello
-		for (int i = 0; i < cards.length(); i++) {
-			JSONObject jsonCard = null;
+		
+		List <TrelloAction> trelloActions = new ArrayList<TrelloAction>(); 
+		// Loop through actions from trello
+		for (int i = 0; i < actions.length(); i++) {
+			Log.d("TrelloController - getListsAndCards", "Action #" + Integer.toString(i));
+			JSONObject jsonAction = null;
+			String action_type = "";
+			String action_date = "";
+			JSONObject action_data = null;
+			JSONObject card = null;
 			String card_id = "";
-			String card_idList = "";
-			String card_name = "";
-			String card_desc = "";
-			Boolean card_closed = false;
-			JSONArray jsonLabels = null;
-			
-			List<String> card_labels = new ArrayList<String>();
-			List<String> card_labelNames = new ArrayList<String>();
 			
 			try {
-				jsonCard = cards.getJSONObject(i);
-				card_id = jsonCard.getString("id");
-				card_idList = jsonCard.getString("idList");
-				card_name = jsonCard.getString("name");
-				card_desc = jsonCard.getString("desc");
-				jsonLabels = jsonCard.getJSONArray("labels");
-				card_closed = jsonCard.getBoolean("closed");
+				jsonAction = actions.getJSONObject(i);
+				action_type = jsonAction.getString("type");
+				action_date = jsonAction.getString("date");
+				action_data = jsonAction.getJSONObject("data");
 			} catch (JSONException e) {
 				e.printStackTrace();
 			}
 			
-			for(int j = 0; j < jsonLabels.length(); j++){
-				JSONObject jsonLabel = null;
+			//Get id of card
+			try {
+				card = action_data.getJSONObject("card");
+				card_id = card.getString("id");
+			} catch (JSONException e) {
+				e.printStackTrace();
+			}
+			
+			//Convert action_date to date
+			//2013-03-29T11:22:30.368Z
+			Log.d("TrelloController - getListsAndCards", "Old Action Date:" + action_date);
+			action_date = action_date.replace("T", " ");
+			action_date = action_date.substring(0, action_date.length() - 5);
+			Log.d("TrelloController - getListsAndCards", "New Action Date:" + action_date);
+			
+			Date date;
+			try {
+				date = dateFormater.parse(action_date);
+			} catch (ParseException e) {
+				date = new Date(0);
+			}
+			
+			//Get card with this id from trello
+			trelloActions.add(new TrelloAction(action_type, card_id, date));
+		}
+		if(trelloActions.size() != 0){
+			//Query trello search api to get cards with these id's
+			url = "https://api.trello.com/1/search?key=" + TrelloKey + "&token=" + TrelloToken + "&query=is:open&modelTypes=cards&card_fields=idBoard,idList,name,desc,labels&idCards=";
+			for(int j=0; j<trelloActions.size(); j++){
+		    	url = url.concat(trelloActions.get(j).getId() + ","); //Remove last comma
+		    }
+			url = url.substring(0, url.length() - 1);
+			
+			Log.d("TrelloController - getListsAndCards", "URL Search:" + url);
+			response = getData(url);
+			result = "";
+			try {
+				//Error here if no Internet
+				InputStream is = response.getEntity().getContent(); 
+				result = convertStreamToString(is);
+			} catch (IllegalStateException e) {
+				e.printStackTrace();
+			} catch (IOException e) {
+				e.printStackTrace();
+			}
+			
+			JSONObject search = null;
+			JSONArray cards = null;
+			try {
+				search = new JSONObject(result);
+				cards = search.getJSONArray("cards");
+			} catch (JSONException e) {
+				e.printStackTrace();
+			}
+			
+			// Loop through these open cards from trello, remove from actions when found
+			for (int k = 0; k < cards.length(); k++) {
+				JSONObject jsonCard = null;
+				String card_id = "";
+				String card_idList = "";
+				String card_name = "";
+				String card_desc = "";
+				JSONArray jsonLabels = null;
+				
+				List<String> card_labels = new ArrayList<String>();
+				List<String> card_labelNames = new ArrayList<String>();
+				
 				try {
-					jsonLabel = jsonLabels.getJSONObject(i);
-					card_labels.add(jsonLabel.getString("color"));
-					card_labelNames.add(jsonLabel.getString("name"));
+					jsonCard = cards.getJSONObject(k);
+					card_id = jsonCard.getString("id");
+					card_idList = jsonCard.getString("idList");
+					card_name = jsonCard.getString("name");
+					card_desc = jsonCard.getString("desc");
+					jsonLabels = jsonCard.getJSONArray("labels");
 				} catch (JSONException e) {
 					e.printStackTrace();
 				}
+				
+				for(int l = 0; l < jsonLabels.length(); l++){
+					JSONObject jsonLabel = null;
+					try {
+						jsonLabel = jsonLabels.getJSONObject(l);
+						card_labels.add(jsonLabel.getString("color"));
+						card_labelNames.add(jsonLabel.getString("name"));
+					} catch (JSONException e) {
+						e.printStackTrace();
+					}
+				}
+				//Find this card in the trelloActions, get its date, and remove it from trelloActions (could be multiple actions on one card)
+				Date newestDate = null;
+				Iterator<TrelloAction> iter = trelloActions.iterator();
+				while(iter.hasNext()){
+					TrelloAction curAction = iter.next();
+					Log.d("TrelloController - getListsAndCards", "Removing actions");
+					if(curAction.getId().contentEquals(card_id)){
+						if(newestDate == null || newestDate.before(curAction.getDate())){
+							newestDate = curAction.getDate();
+						}
+						Log.d("TrelloController - getListsAndCards", "Removing:" + curAction.getId());
+						iter.remove(); //Remove this action from trelloActions
+					}
+				}
+				TrelloCard newCard = new TrelloCard(card_id, card_idList, board_id, card_name, card_desc, card_labelNames, card_labels, false, newestDate);
+				trelloCards.add(newCard);
 			}
-			TrelloCard newCard = new TrelloCard(card_id, card_idList, board_id, card_name, card_desc, card_labelNames, card_labels, card_closed);
-			trelloCards.add(newCard);
+			
+			//Any actions left in trelloActions correspond cards which have been removed
+			List<String> alreadyAdded = new ArrayList<String>();
+			Iterator<TrelloAction> iter = trelloActions.iterator();
+			while(iter.hasNext()){
+				TrelloAction curAction = iter.next();
+				Log.d("TrelloController - getListsAndCards", "Actions left!");
+				Log.d("TrelloController - getListsAndCards", "Actions left:" + curAction.getId());
+
+				if(alreadyAdded.contains(curAction.getId()) == false){
+					alreadyAdded.add(curAction.getId());
+					
+					//Get newest date
+					Date newestDate = null;
+					Iterator<TrelloAction> iter2 = trelloActions.iterator();
+					while(iter2.hasNext()){
+						TrelloAction curAction2 = iter2.next();
+						if(curAction2.getId().contentEquals(curAction.getId())){
+							if(newestDate == null || newestDate.before(curAction2.getDate())){
+								newestDate = curAction2.getDate();
+							}
+						}
+					}
+					TrelloCard newCard = new TrelloCard(curAction.getId(), "", "", "", "", null, null, true, newestDate);
+					trelloCards.add(newCard);
+				}
+			}
 		}
+		
 		// Loop through lists from trello
 		for (int i = 0; i < lists.length(); i++) {
 			JSONObject jsonList = null;
