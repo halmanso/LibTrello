@@ -32,10 +32,15 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.database.Cursor;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
+import android.os.AsyncTask;
+import android.os.Handler;
 import android.util.Log;
 
 //Singleton
@@ -46,22 +51,35 @@ public class TrelloController {
 	private String TrelloToken;
 	private Context AppContext;
 	
+	private Boolean currentlySyncing = false;
+	
+	private Handler autoSync_handler = new Handler();;
+	Runnable autoSync_task;
+	
+	private ISyncController syncController = null;
+	
 	public static final String PREFS_NAME = "TrelloClient";
 	
 	private static SimpleDateFormat dateFormater;
-
-	private Boolean syncAllBoards = true;
+	private static SimpleDateFormat dateFormaterReport;
+	
+	private Boolean syncAllBoards = false;
+	private Boolean autoSyncing = false;
 	
 	List <TrelloBoard> trelloBoards;
 	List <TrelloList> trelloLists;
 	List <TrelloCard> trelloCards; 
 	
 	//TODO put these in library
+	private static final Integer AUTO_SYNC_INTERVAL = 30;
+
 	private static final String COL_ID = "_id";
 	private static final String COL_NAME = "name";
 	private static final String COL_PACKAGE_NAME = "package_name";
 	private static final String COL_ALLOW_SYNCING = "allow_syncing";
 	private static final String COL_LAST_SYNC = "lastsync";
+    public static final String COL_AUTO_SYNC = "auto_sync";
+    public static final String COL_BOARD_NAME = "board_name";
 	private static final String AUTHORITY = "edu.purdue.autogenics.trello.provider";
 	private static final String BASE_PATH = "apps";
 	private static final String LOGINS_PATH = "logins";
@@ -74,29 +92,83 @@ public class TrelloController {
 		TrelloKey = trelloKey;
 		TrelloToken = trelloToken;
 		this.AppContext = AppContext;
+		
 		//2013-03-29T11:22:30.368Z
 		dateFormater = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US);
 		dateFormater.setTimeZone(TimeZone.getTimeZone("UTC"));
-	}
-
-	public void resyncBoards(){
-		syncAllBoards = true;
+		
+		dateFormaterReport = new SimpleDateFormat("MMM dd h:mm a", Locale.US);
+		dateFormaterReport.setTimeZone(TimeZone.getDefault());
 	}
 	
+	public void setSyncController(ISyncController syncController){
+		this.syncController = syncController;
+		
+		stopAutoSync();
+		startAutoSync();
+	}
 
-	public boolean syncingEnabled(){
-		String[] projection = { COL_ID, COL_NAME, COL_PACKAGE_NAME, COL_ALLOW_SYNCING, COL_LAST_SYNC };
+	
+	public void startAutoSync(){
+		if(autoSyncing == false){
+			if(autoSyncEnabled()){
+				beginAutoSync(AUTO_SYNC_INTERVAL);
+			}
+		}
+	}
+	
+	private void beginAutoSync(final Integer intervalSeconds){
+		final TrelloController parent = this;
+		autoSync_task = new Runnable(){
+		    @Override 
+		    public void run() {
+		    	parent.sync();
+		        autoSync_handler.postDelayed(this, (intervalSeconds * 1000));
+		    }
+		};
+		autoSync_task.run();
+	}
+	
+	public void stopAutoSync(){
+		autoSync_handler.removeCallbacksAndMessages(null);
+		autoSyncing = false;
+		Log.d("TrelloController - stopAutoSync", "autoSync stopped");
+	}	
+
+	public boolean autoSyncEnabled(){
+		String[] projection = { COL_ID, COL_PACKAGE_NAME, COL_AUTO_SYNC };
 		Cursor mCursor = AppContext.getContentResolver().query(CONTENT_URI, projection, null, null, null);
 		Boolean found = false;
 		if (null == mCursor) {
-		    /*
-		     * Insert code here to handle the error. Be sure not to use the cursor! You may want to
-		     * call android.util.Log.e() to log this error.
-		     *
-		     */
+			// If the Cursor is empty, the provider found no matches
+			Log.d("TrelloController - autoSyncEnabled", "Null cursor");
+		} else if (mCursor.getCount() < 1) {
+			Log.d("TrelloController - autoSyncEnabled", "None found");
+		} else {
+			//Results
+			String packageName = AppContext.getPackageName();
+			while(mCursor.moveToNext()){
+				String matchPackageName = mCursor.getString(mCursor.getColumnIndex(COL_PACKAGE_NAME));
+				int enabled = mCursor.getInt(mCursor.getColumnIndex(COL_AUTO_SYNC));
+				//Log.d("TrelloController - syncingEnabled", "Match: " + packageName + " with " + matchPackageName);
+				if(packageName.contentEquals(matchPackageName)){
+					if(enabled == 1){
+						found = true;
+					}
+				}
+			}
+		}
+		if(mCursor != null) mCursor.close();
+		return found;
+	}
+	
+	public boolean syncingEnabled(){
+		String[] projection = { COL_ID, COL_PACKAGE_NAME, COL_ALLOW_SYNCING };
+		Cursor mCursor = AppContext.getContentResolver().query(CONTENT_URI, projection, null, null, null);
+		Boolean found = false;
+		if (null == mCursor) {
 			// If the Cursor is empty, the provider found no matches
 			Log.d("TrelloController - syncingEnabled", "Null cursor");
-
 		} else if (mCursor.getCount() < 1) {
 			Log.d("TrelloController - syncingEnabled", "None found");
 		} else {
@@ -105,7 +177,7 @@ public class TrelloController {
 			while(mCursor.moveToNext()){
 				String matchPackageName = mCursor.getString(mCursor.getColumnIndex(COL_PACKAGE_NAME));
 				int enabled = mCursor.getInt(mCursor.getColumnIndex(COL_ALLOW_SYNCING));
-				Log.d("TrelloController - syncingEnabled", "Match: " + packageName + " with " + matchPackageName);
+				//Log.d("TrelloController - syncingEnabled", "Match: " + packageName + " with " + matchPackageName);
 				if(packageName.contentEquals(matchPackageName)){
 					if(enabled == 1){
 						found = true;
@@ -113,8 +185,27 @@ public class TrelloController {
 				}
 			}
 		}
-		mCursor.close();
+		if(mCursor != null) mCursor.close();
 		return found;
+	}
+	
+	private void reportSyncTime(String lastSync){
+		Log.d("TrelloController - reportSyncTime", "Reporting:" + lastSync);
+		ContentValues values = new ContentValues();
+		values.put(COL_LAST_SYNC, lastSync);
+		String packageName = AppContext.getPackageName();
+		String where = COL_PACKAGE_NAME + " = '" +  packageName + "'";
+		int updated = AppContext.getContentResolver().update(CONTENT_URI, values, where, null);
+		Log.d("TrelloController - reportSyncTime", "Updated " + Integer.toString(updated) + " rows");
+	}
+	
+	private void reportBoardName(String boardName){
+		//Send board name to trello app so you can view the board in trello in the browser
+		ContentValues values = new ContentValues();
+		values.put(COL_BOARD_NAME, boardName);
+		String packageName = AppContext.getPackageName();
+		String where = COL_PACKAGE_NAME + " = '" +  packageName + "'";
+		AppContext.getContentResolver().update(CONTENT_URI, values, where, null);
 	}
 	
 	public boolean getAPIKeys(){
@@ -127,11 +218,6 @@ public class TrelloController {
 		Cursor mCursor = AppContext.getContentResolver().query(CONTENT_URI_LOGINS, projection, null, null, null);
 		Boolean found = false;
 		if (null == mCursor) {
-		    /*
-		     * Insert code here to handle the error. Be sure not to use the cursor! You may want to
-		     * call android.util.Log.e() to log this error.
-		     *
-		     */
 			// If the Cursor is empty, the provider found no matches
 			Log.d("TrelloController - getAPIKeys", "Null cursor");
 		} else if (mCursor.getCount() < 1) {
@@ -152,7 +238,65 @@ public class TrelloController {
 		return found;
 	}
 	
-	public void sync(ISyncController syncController){
+	public void sync(){
+		if(this.syncingEnabled()){
+			if(this.getAPIKeys()){
+				//Sync
+				if(currentlySyncing){
+					Log.d("TrelloController - sync", "Already syncing");
+				} else {
+					if(isNetworkConnected(AppContext)){
+						currentlySyncing = true;
+						new SyncTask(this, syncController).execute();
+					} else {
+						Log.d("TrelloController - sync", "No network connection");
+					}
+				}
+			} else {
+				Log.d("TrelloController - sync", "API Keys not loaded");
+			}
+		} else {
+			Log.d("TrelloController - sync", "Syncing not enabled");
+		}
+	}
+	
+	private boolean isNetworkConnected(Context context) {
+		ConnectivityManager cm = (ConnectivityManager) context.getSystemService(Context.CONNECTIVITY_SERVICE);
+		NetworkInfo ni = cm.getActiveNetworkInfo();
+		if (ni == null) {
+			// There are no active networks.
+			return false;
+		}
+	    return true;
+	} 
+	
+	private class SyncTask extends AsyncTask<Void, Integer, Void> {
+		private ISyncController syncController;
+		private TrelloController parent;
+		public SyncTask(TrelloController parent, ISyncController syncController){
+			this.syncController = syncController;
+			this.parent = parent;
+		}
+		
+		@Override
+		protected Void doInBackground(Void... params) {
+			// TODO Auto-generated method stub
+			this.parent.syncThread(this.syncController);
+			return null;
+		}
+		
+		@Override
+	    protected void onProgressUpdate(Integer... progress) {
+	         //setProgressPercent(progress[0]);
+	    }
+		@Override
+	    protected void onPostExecute(Void result) {
+			parent.currentlySyncing = false;
+			syncController.finishedSync();
+	    }
+	 }
+	
+	private void syncThread(ISyncController syncController){
 		//Check if syncing is enabled
 		
 		trelloLists = new ArrayList<TrelloList>();
@@ -164,6 +308,20 @@ public class TrelloController {
 		Boolean addedBoards = false;
 		
 		localBoards = syncController.getLocalBoards();
+		//TODO only do if changes
+		if(localBoards.isEmpty() == false){
+			if(localBoards.get(0).getTrelloId().length() != 0){
+				reportBoardName(localBoards.get(0).getTrelloId());
+			}
+			//Check if any without an id
+			for(int i=0; i < localBoards.size(); i++){
+				if(localBoards.get(i).getTrelloId().length() == 0){
+					//Need to sync boards
+					syncAllBoards = true;
+				}
+			}
+		}
+		
 		if(syncAllBoards == true){
 			//Download all boards from Trello
 			trelloBoards = getBoards();
@@ -330,7 +488,7 @@ public class TrelloController {
 								
 								//Check which is newer, trello or local
 								Log.d("TrelloController - sync", "Local Time:" + dateFormater.format(localCard.getChangedDate()));
-								Log.d("TrelloController - sync", "Trello Tim:" + dateFormater.format(card.getChangedDate()));
+								Log.d("TrelloController - sync", "Trello Time:" + dateFormater.format(card.getChangedDate()));
 								
 								if(localCard.getChangedDate().before(card.getChangedDate())){
 									// Trello was edited last, update local to trello
@@ -370,6 +528,7 @@ public class TrelloController {
 						if(localCard.getBoardId().contentEquals(localBoard.getTrelloId())){
 							if(localCard.getTrelloId().length() == 0){
 								//Add card to trello
+								Log.d("TrelloController - sync", "Adding card on trello");
 								String newId = AddCardToTrello(localCard);
 								syncController.setCardLocalChanges(localCard, false);
 								if(newId != null){
@@ -730,14 +889,14 @@ public class TrelloController {
 	    String dateLastSync = settings.getString("dateLastSync", null);
 		
 		//String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&cards=all&card_fields=idList,name,desc,labels,closed&lists=all&list_fields=name,closed";
-		String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&lists=open&list_fields=name,closed&actions=createCard,updateCard,commentCard,addAttachmentToCard,moveCardFromBoard,moveCardToBoard&action_memberCreator=false&action_fields=data,type,date&action_member=false";
+		String url = "https://api.trello.com/1/boards/" + boardId + "?key=" + TrelloKey + "&token=" + TrelloToken + "&fields=name,desc,closed&lists=all&list_fields=name,closed&actions=createCard,updateCard,commentCard,addAttachmentToCard,moveCardFromBoard,moveCardToBoard&action_memberCreator=false&action_fields=data,type,date&action_member=false";
 
 	    if(dateLastSync != null){
 	    	dateLastSync = dateLastSync.replace(" ", "T");
 	    	dateLastSync = dateLastSync + ".000Z";
 	    	url = url + "&actions_since=" + dateLastSync;
 	    }
-		Log.d("TrelloController - getListsAndCards", "URL Actions:" + url);
+		//Log.d("TrelloController - getListsAndCards", "URL Actions:" + url);
 
 	    
 		//2013-03-29T11:22:30.368Z
@@ -747,6 +906,7 @@ public class TrelloController {
 	    editor.putString("dateLastSync", dateFormater.format(new Date()));
 	    editor.commit();
 	    
+		reportSyncTime(dateFormaterReport.format(new Date()));
 		
 		HttpResponse response = getData(url);
 		String result = "";
@@ -785,7 +945,7 @@ public class TrelloController {
 		List <TrelloAction> trelloActions = new ArrayList<TrelloAction>(); 
 		// Loop through actions from trello
 		for (int i = 0; i < actions.length(); i++) {
-			Log.d("TrelloController - getListsAndCards", "Action #" + Integer.toString(i));
+			//Log.d("TrelloController - getListsAndCards", "Action #" + Integer.toString(i));
 			JSONObject jsonAction = null;
 			String action_type = "";
 			String action_date = "";
@@ -812,10 +972,10 @@ public class TrelloController {
 			
 			//Convert action_date to date
 			//2013-03-29T11:22:30.368Z
-			Log.d("TrelloController - getListsAndCards", "Old Action Date:" + action_date);
+			//Log.d("TrelloController - getListsAndCards", "Old Action Date:" + action_date);
 			action_date = action_date.replace("T", " ");
 			action_date = action_date.substring(0, action_date.length() - 5);
-			Log.d("TrelloController - getListsAndCards", "New Action Date:" + action_date);
+			//Log.d("TrelloController - getListsAndCards", "New Action Date:" + action_date);
 			
 			Date date;
 			try {
@@ -835,7 +995,7 @@ public class TrelloController {
 		    }
 			url = url.substring(0, url.length() - 1);
 			
-			Log.d("TrelloController - getListsAndCards", "URL Search:" + url);
+			//Log.d("TrelloController - getListsAndCards", "URL Search:" + url);
 			response = getData(url);
 			result = "";
 			try {
@@ -913,8 +1073,8 @@ public class TrelloController {
 			Iterator<TrelloAction> iter = trelloActions.iterator();
 			while(iter.hasNext()){
 				TrelloAction curAction = iter.next();
-				Log.d("TrelloController - getListsAndCards", "Actions left!");
-				Log.d("TrelloController - getListsAndCards", "Actions left:" + curAction.getId());
+				//Log.d("TrelloController - getListsAndCards", "Actions left!");
+				//Log.d("TrelloController - getListsAndCards", "Actions left:" + curAction.getId());
 
 				if(alreadyAdded.contains(curAction.getId()) == false){
 					alreadyAdded.add(curAction.getId());

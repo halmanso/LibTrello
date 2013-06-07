@@ -14,6 +14,7 @@ public class TrelloBoard implements IBoard {
 		this.id = id;
 		this.name = name;
 		this.desc = desc;
+		this.closed = closed;
 	}
 	
 	@Override

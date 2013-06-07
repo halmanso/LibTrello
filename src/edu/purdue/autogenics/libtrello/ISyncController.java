@@ -21,4 +21,6 @@ public interface ISyncController {
 	public List<ICard> getLocalCards();
 	public List<IList> getLocalLists();
 	public List<IBoard> getLocalBoards();
+	
+	public void finishedSync();
 }
