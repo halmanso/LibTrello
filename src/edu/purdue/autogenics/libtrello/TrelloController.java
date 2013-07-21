@@ -46,9 +46,9 @@ import android.util.Log;
 //Singleton
 //Handles syncing of all boards/lists/cards
 public class TrelloController {
-	private String OrganizationID;
-	private String TrelloKey;
-	private String TrelloToken;
+	private String OrganizationID = "";
+	private String TrelloKey = "";
+	private String TrelloToken = "";
 	private Context AppContext;
 	
 	private Boolean currentlySyncing = false;
@@ -86,11 +86,8 @@ public class TrelloController {
 	private static final Uri CONTENT_URI = Uri.parse("content://" + AUTHORITY + "/" + BASE_PATH);
 	private static final Uri CONTENT_URI_LOGINS = Uri.parse("content://" + AUTHORITY + "/" + LOGINS_PATH);
 	
-	public TrelloController(Context AppContext, String organizationID, String trelloKey, String trelloToken) {
+	public TrelloController(Context AppContext) {
 		super();
-		OrganizationID = organizationID;
-		TrelloKey = trelloKey;
-		TrelloToken = trelloToken;
 		this.AppContext = AppContext;
 		
 		//2013-03-29T11:22:30.368Z
@@ -225,10 +222,29 @@ public class TrelloController {
 		} else {
 			//Results
 			if(mCursor.moveToFirst()){
+				SharedPreferences settings = AppContext.getSharedPreferences(PREFS_NAME, 0);
+				String oldTrelloKey = settings.getString("TrelloKey", "");
+				String oldTrelloToken = settings.getString("TrelloToken", "");
+				String oldOrganizationID = settings.getString("OrganizationID", "");
+				Log.d("OldOrgoID:",oldOrganizationID);
 				TrelloKey = mCursor.getString(mCursor.getColumnIndex(COL_APIKEY)).trim();
 				TrelloToken = mCursor.getString(mCursor.getColumnIndex(COL_TOKEN)).trim();
 				OrganizationID = mCursor.getString(mCursor.getColumnIndex(COL_ORGO_ID)).trim();
 				found = true;
+				Log.d("CurrentOrgoID:", OrganizationID);
+				if(oldOrganizationID.contentEquals(OrganizationID) == false){
+					if(oldOrganizationID.length() > 0){
+						Log.d("syncAllBoards", "syncAllBoards");
+						syncAllBoards = true; //New organization
+						syncController.changeOrganization();
+					}
+					//Save new olds
+					 SharedPreferences.Editor editor = settings.edit();
+					 editor.putString("TrelloKey", TrelloKey);
+					 editor.putString("TrelloToken", TrelloToken);
+					 editor.putString("OrganizationID", OrganizationID);
+					 editor.commit();
+				}
 			}
 			Log.d("TrelloController - getAPIKeys", "Key:" + TrelloKey.trim());
 			Log.d("TrelloController - getAPIKeys", "Token:" + TrelloToken.trim());
@@ -323,6 +339,7 @@ public class TrelloController {
 		}
 		
 		if(syncAllBoards == true){
+			Log.d("SyncingAll Boards", "SyncingAll Boards");
 			//Download all boards from Trello
 			trelloBoards = getBoards();
 			
@@ -575,7 +592,30 @@ public class TrelloController {
 		results.add(new BasicNameValuePair("desc", theCard.getDesc()));
 		results.add(new BasicNameValuePair("idList", theCard.getListId()));
 		results.add(new BasicNameValuePair("closed", Boolean.toString(theCard.getClosed())));
-
+		
+		JSONArray jsonLabels = null;
+		if(theCard.getLabels() != null){
+			List<String> labels = theCard.getLabels();
+			List<String> labelNames = theCard.getLabelNames();
+			
+			jsonLabels = new JSONArray();
+			for(int l = 0; l < labels.size(); l++){
+				JSONObject jsonLabel = new JSONObject();
+				try {
+					jsonLabel.put("color", labels.get(l));
+					if(labelNames != null){
+						jsonLabel.put("name", labelNames.get(l));
+					} else {
+						jsonLabel.put("name", "");
+					}
+				} catch (JSONException e) {
+					e.printStackTrace();
+				}
+				jsonLabels.put(jsonLabel);
+			}
+		}
+		if(jsonLabels != null) results.add(new BasicNameValuePair("labels", jsonLabels.toString()));
+		
 		try {
 			String result = "";
 			try {
@@ -609,6 +649,31 @@ public class TrelloController {
 		if(theCard.getName() != null) results.add(new BasicNameValuePair("name", theCard.getName()));
 		if(theCard.getDesc() != null) results.add(new BasicNameValuePair("desc", theCard.getDesc()));
 
+		JSONArray jsonLabels = null;
+		if(theCard.getLabels() != null){
+			List<String> labels = theCard.getLabels();
+			List<String> labelNames = theCard.getLabelNames();
+			
+			jsonLabels = new JSONArray();
+			for(int l = 0; l < labels.size(); l++){
+				JSONObject jsonLabel = new JSONObject();
+				try {
+					jsonLabel.put("color", labels.get(l));
+					if(labelNames != null){
+						jsonLabel.put("name", labelNames.get(l));
+					} else {
+						jsonLabel.put("name", "");
+					}
+				} catch (JSONException e) {
+					e.printStackTrace();
+				}
+				jsonLabels.put(jsonLabel);
+			}
+		}
+		if(jsonLabels != null) results.add(new BasicNameValuePair("labels", jsonLabels.toString()));
+		
+		if(jsonLabels != null) Log.d("Labels:", jsonLabels.toString());
+		
 		String newId = null;
 		try {
 			post.setEntity(new UrlEncodedFormEntity(results));
@@ -989,12 +1054,14 @@ public class TrelloController {
 		}
 		if(trelloActions.size() != 0){
 			//Query trello search api to get cards with these id's
-			url = "https://api.trello.com/1/search?key=" + TrelloKey + "&token=" + TrelloToken + "&query=is:open&modelTypes=cards&card_fields=idBoard,idList,name,desc,labels&idCards=";
+			url = "https://api.trello.com/1/search?key=" + TrelloKey + "&token=" + TrelloToken + "&query=is:open&modelTypes=cards&card_fields=idBoard,idList,name,desc,labels&cards_limit=1000&idCards=";
 			for(int j=0; j<trelloActions.size(); j++){
 		    	url = url.concat(trelloActions.get(j).getId() + ","); //Remove last comma
 		    }
 			url = url.substring(0, url.length() - 1);
 			
+			Log.d("Get Cards URL:" , url);
+
 			//Log.d("TrelloController - getListsAndCards", "URL Search:" + url);
 			response = getData(url);
 			result = "";

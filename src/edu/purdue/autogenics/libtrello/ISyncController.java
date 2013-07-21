@@ -3,6 +3,8 @@ package edu.purdue.autogenics.libtrello;
 import java.util.List;
 
 public interface ISyncController {
+	public void changeOrganization();
+	
 	public void updateBoard(IBoard localBoard, IBoard trelloBoard);
 	public void addBoard(IBoard trelloBoard);
 	public void setBoardTrelloId(IBoard localBoard, String newId);
